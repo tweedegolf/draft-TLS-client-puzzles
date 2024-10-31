@@ -1,0 +1,690 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!DOCTYPE rfc SYSTEM "rfc2629.dtd" [
+<!ENTITY RFC2119 SYSTEM "https://xml2rfc.tools.ietf.org/public/rfc/bibxml/reference.RFC.2119.xml">
+<!ENTITY RFC5754 SYSTEM "https://xml2rfc.tools.ietf.org/public/rfc/bibxml/reference.RFC.5754.xml">
+<!ENTITY RFC8019 SYSTEM "https://xml2rfc.tools.ietf.org/public/rfc/bibxml/reference.RFC.8019.xml">
+<!ENTITY RFC8446 SYSTEM "https://xml2rfc.tools.ietf.org/public/rfc/bibxml/reference.RFC.8446.xml">
+<!ENTITY RFC8701 SYSTEM "https://xml2rfc.tools.ietf.org/public/rfc/bibxml/reference.RFC.8701.xml">
+<!ENTITY NYGRENCLIENTPUZZLES SYSTEM "https://xml2rfc.tools.ietf.org/public/rfc/bibxml3/reference.I-D.nygren-tls-client-puzzles.xml">
+<!ENTITY NIRCLIENTPUZZLES SYSTEM "https://xml2rfc.tools.ietf.org/public/rfc/bibxml3/reference.I-D.nir-tls-puzzles.xml">
+]>
+
+<?rfc rfcedstyle="yes"?>
+<?rfc toc="yes"?>
+<?rfc tocindent="yes"?>
+<?rfc sortrefs="yes"?>
+<?rfc symrefs="yes"?>
+<?rfc strict="yes"?>
+<?rfc comments="yes"?>
+<?rfc compact="yes"?>
+<?rfc inline="yes"?>
+<?rfc text-list-symbols="-o*+"?>
+
+<rfc docName="draft-venhoek-tls-client-puzzles-00" category="std" ipr="trust200902">
+
+  <front>
+    <title abbrev="Client Puzzles">TLS Client Puzzles Extension</title>
+
+    <author initials="D." surname="Venhoek" fullname="David Venhoek">
+      <organization>Tweede Golf B.V.</organization>
+      <address>
+        <email>david@venhoek.nl</email>
+      </address>
+    </author>
+    <author initials="W." surname="Bokslag" fullname="Wouter Bokslag">
+      <organization>Midnight Blue</organization>
+      <address>
+        <email>w.bokslag@midnightblue.nl</email>
+      </address>
+    </author>
+    <author initials="M." surname="Schoolderman" fullname="Marc Schoolderman">
+      <organization>Tweede Golf B.V.</organization>
+      <address>
+        <email>marc@tweedegolf.com</email>
+      </address>
+    </author>
+    <author initials="E." surname="Nygren" fullname="Erik Nygren">
+      <organization>Akamai Technologies</organization>
+      <address>
+        <email>erik+ietf@nygren.org</email>
+        <uri>http://erik.nygren.org/</uri>
+      </address>
+    </author>
+    <author initials="S." surname="Erb" fullname="Samuel Erb">
+      <organization>Akamai Technologies</organization>
+      <address>
+        <email>serb@akamai.com</email>
+      </address>
+    </author>
+    <author initials="A." surname="Biryukov" fullname="Alex Biryukov">
+      <organization>University of Luxembourg</organization>
+      <address>
+        <email>alex.biryukov@uni.lu</email>
+      </address>
+    </author>
+    <author initials="D." surname="Khovratovich" fullname="Dmitry Khovratovich">
+      <organization>University of Luxembourg</organization>
+      <address>
+        <email>khovratovich@gmail.com</email>
+      </address>
+    </author>
+	  <author initials="A." surname="Juels" fullname="Ari Juels">
+      <organization>Cornell Tech and Cornell University</organization>
+      <address>
+        <email>juels@cornell.edu</email>
+      </address>
+    </author>
+
+    <date year="2024" month="September" day="12"/>
+
+    <area>General</area>
+
+    <workgroup>Transport Layer Security</workgroup>
+    
+    <keyword>Internet-Draft</keyword>
+
+    <abstract>
+
+
+<t>Client puzzles allow a TLS server to defend itself against asymmetric DDoS attacks.
+In particular, it allows a server to request clients perform a selected amount
+of computation prior to the server performing expensive cryptographic operations.
+This allows servers to employ a layered defense that represents an improvement
+over pure rate-limiting strategies.</t>
+
+<t>Client puzzles are implemented as an extension to TLS 1.3
+<xref target="RFC8446"/> wherein a server can issue a HelloRetryRequest
+containing the puzzle as an extension.  The client must then
+resend its ClientHello with the puzzle results in the extension.</t>
+
+
+
+    </abstract>
+
+
+  </front>
+
+  <middle>
+
+
+<section anchor="overview" title="Overview and rationale">
+
+<t>Adversaries can exploit the design of the TLS protocol to craft
+powerful asymmetric DDOS attacks.  Once an attacker has opened a TCP
+connection, the attacker can transmit effectively static content that
+causes the server to perform expensive cryptographic operations. Rate
+limiting offers one possible defense against this type of attack;
+however, pure rate limiting systems represent an incomplete solution:</t>
+
+<t><list style="numbers">
+  <t>Rate limiting systems work best when a small number of bots are
+attacking a single server. Rate limiting is much more difficult when
+a large number of bots are directing small amounts of traffic to
+each member of a large distributed pool of servers.</t>
+  <t>Rate limiting systems encounter problems where a mixture of “good”
+and “bad” clients are hidden behind a single NAT or Proxy IP
+address and thus are all stuck being treated on equal footing.</t>
+  <t>Rate limiting schemes often penalize well-behaved good clients
+(which try to complete handshakes and may limit their number of
+retries) much more heavily than they penalize attacking bad clients
+(which may try to disguise themselves as good clients, but which
+otherwise are not constrained to behave in any particular way).</t>
+</list></t>
+
+<t>Client puzzles are complementary to rate-limiting and give servers
+another option than just rejecting some fraction of requests. A server
+can provide a puzzle (of varying and server-selected complexity) to a
+client as part of a HelloRetryRequest extension. The client must
+choose to either abandon the connection or solve the puzzle and resend
+its ClientHello with a solution to the puzzle. Puzzles are designed to
+have asymmetric complexity such that it is much cheaper for the server to
+generate and validate puzzles than it is for clients to solve them.</t>
+
+<t>Client puzzle systems may be inherently “unfair” to clients that run 
+with limited resources (such as mobile devices with batteries and slow CPUs).
+However, client puzzle schemes will typically only be evoked when a server is under
+attack and would otherwise be rejecting some fraction of requests.
+The overwhelming majority of transactions will never involve a
+client puzzle.  Indeed, if client puzzles are successful in forcing
+adversaries to use a new attack vector, the presence of client puzzles
+will be completely transparent to end users.</t>
+
+<t>It is likely that not all clients will choose to support this
+extension.  During attack scenarios, servers will still have the
+option to apply traditional rate limiting schemes (perhaps with
+different parameters) to clients not supporting this extension or
+using a version of TLS prior to 1.3.</t>
+
+</section>
+<section anchor="notational-conventions" title="Notational Conventions">
+
+<t>The key words “MUST”, “MUST NOT”, “REQUIRED”, “SHALL”, “SHALL NOT”, “SHOULD”, “SHOULD NOT”,
+“RECOMMENDED”, “MAY”, and “OPTIONAL” in this document are to be interpreted as described in
+<xref target="RFC2119"/>.</t>
+
+<t>Messages are formatted with the notation as described within <xref target="RFC8446"/>.</t>
+
+</section>
+<section anchor="handshake-changes" title="Handshake Changes">
+
+<t>Client puzzles are implemented as a new ClientPuzzleExtension to TLS
+1.3 <xref target="RFC8446"/>.  A client supporting the
+ClientPuzzleExtension MUST indicate support by sending a
+ClientPuzzleExtension along with their ClientHello containing a list
+of puzzle types supported, but with no puzzle response.  When a server
+wishes to force the client to solve a puzzle, it MAY send a
+HelloRetryRequest with a ClientPuzzleExtension containing a puzzle of
+a supported puzzle type and with associated parameters.  To continue
+with the handshake, a client MUST resend their ClientHello with a
+ClientPuzzleExtension containing a response to the puzzle.
+The ClientHello must otherwise be identical to the initial ClientHello,
+other than for attributes that are defined by specification to 
+not be identical.</t>
+
+<t>If a puzzle would consume too many resources, a client MAY choose to
+abort the handshake with the new fatal alert “puzzle_too_hard” and terminate
+the connection.</t>
+
+<t>A typical handshake when a puzzle is issued will look like:</t>
+
+<figure><artwork><![CDATA[
+   Client                                               Server
+
+   ClientHello              
+     + ClientPuzzleExtension
+     + ClientKeyShare        -------->
+                             <--------       HelloRetryRequest
+                                       + ClientPuzzleExtension
+   ClientHello
+     + ClientPuzzleExtension
+     + ClientKeyShare        -------->
+                                                   ServerHello
+                                                ServerKeyShare
+                                        {EncryptedExtensions*}
+                                        {ServerConfiguration*}
+                                                {Certificate*}
+                                         {CertificateRequest*}
+                                          {CertificateVerify*}
+                             <--------              {Finished}
+   {Certificate*}
+   {CertificateVerify*}
+   {Finished}                -------->
+   [Application Data]        <------->     [Application Data]
+]]></artwork></figure>
+
+<t>Figure 1.  Message flow for a handshake with a client puzzle</t>
+
+<t>* Indicates optional or situation-dependent messages that are not always sent.</t>
+
+<t>{} Indicates messages protected using keys derived from the ephemeral secret.</t>
+
+<t>[] Indicates messages protected using keys derived from the master secret.</t>
+
+<t>Note in particular that the major cryptographic operations (starting
+to use the ephemeral secret and generating the CertificateVerify) are
+performed <spanx style="emph">after</spanx> the server has received and validated the
+ClientPuzzleExtension response from the client.</t>
+
+<section anchor="the-clientpuzzleextension-message" title="The ClientPuzzleExtension Message">
+
+<t>The ClientPuzzleExtension message contains the communication necessary
+for the client puzzle mechanims to work. It is used for three purposes:
+<list style = "numbered">
+  <t>
+    In a ClientHello to indicate which puzzles are supported.
+  </t>
+  <t>
+    In a HelloRetryRequest to provide the client with a specific puzzle to solve.
+  </t>
+  <t>
+    In a retried ClientHello to provide the server with the solution to the puzzle.
+  </t>
+</list>
+</t>
+
+<figure><artwork><![CDATA[
+      struct {
+          ClientPuzzleType type<2..254>;
+          opaque client_puzzle_challenge_response<0..2^16-1>;
+      } ClientPuzzleExtension;
+
+      enum {
+         echo (0),
+         sha256_cpu (1),
+         sha512_cpu (2),
+         birthday_puzzle (3),
+         (0xFFFF)
+      } ClientPuzzleType;
+]]></artwork></figure>
+
+<t>The interpretation of the fields of the ClientPuzzleExtension depends on
+the purpose for which the extension field is sent. In a ClientHello, they should follow:
+<list style="hanging">
+  <t hangText="type:">
+  When the extension is used to convey supported puzzles, this MUST contain a list of all
+  puzzle types supported by the implementation. When used to transport the solution to a
+  puzzle, this field MUST contain a single puzzle type, and MUST contain the type of
+  the puzzle for which a solution is in the "client_puzzle_challenge_response" field.
+  </t>
+  <t hangText="client_puzzle_challenge_response">
+  When the extension is used to convey supported puzzles, this MUST be empty. When used to
+  transport a puzzle solution, it MUST contain a solution to the puzzle type indicated in the
+  "type" field.
+  </t>
+</list>
+If the server provides a HelloRetryRequest, they should follow:
+<list style="hanging">
+  <t hangText="type:">
+  The type field MUST contain the type of the puzzle provided to the client. In HelloRetryRequest
+  messages, it MUST always contain a single puzzle type.
+  </t>
+  <t hangText="client_puzzle_challenge_response">
+  This field MUST contain a puzzle of the type indicated by the "type" field.
+  </t>
+</list>
+Note that a server MAY choose not to provide a puzzle in a HelloRetryRequest, even if it supports
+the client puzzle extension.
+</t>
+
+<t>Clients supporting the ClientPuzzleExtension MUST send a ClientPuzzleExtension listing all supported
+puzzles in their initial ClientHello message. Unless provided with a puzzle, they MUST also repeat
+this extension in any retried ClientHello.
+</t>
+
+<t>
+A supporting server MAY send a client indicating support for the ClientPuzzleExtension a puzzle of a
+type the client indicated support for. A server MUST ignore puzzle types send by the client for which it has no support.
+A server MUST NOT send a puzzle for a type not supported by the client according to its initial ClientHello.
+A server MAY abort a connection with clients not supporting the ClientPuzzleExtension or if there is no overlap
+between the puzzle types acceptable to the server and those supported by the client.
+The server MAY send a "handshake_failure" alert in such cases.
+</t>
+
+<t>
+A client receiving a puzzle from the server MAY abort the connection if the puzzle difficulty is perceived to be
+too high. A client MAY send a "handshake_failure" alert in such cases. If a client sends a retried ClientHello after
+receiving a client puzzle from the server, it MUST provide a ClientPuzzleExtension containing a solution to that puzzle.
+A server receiving a retried ClientHello without a valid solution after providing a puzzle MUST abort the connection, optionally sending
+a "missing_extension" alert.
+</t>
+
+<t>
+A client that receives a puzzle of a type it does not support MUST abort the connection. It MAY send an "illegal_parameter" alert
+in such cases. A server that receives a puzzle solution of a type it never gave a challenge for MUST abort the connection. It MAY
+send an "illegal_parameter" alert in such cases.
+</t>
+</section>
+</section>
+<section anchor="usage-by-servers" title="Usage by Servers">
+
+<t>Servers MAY send puzzles to clients when under duress, and the 
+percentage of clients receiving puzzles and the complexity
+of the puzzles both MAY be selected as a function of the degree of duress.</t>
+
+<t>Servers MAY use additional factors, such as client IP reputation
+information, to determine when to send a puzzle as well as the
+complexity.</t>
+
+</section>
+
+<section anchor="grease" title="GREASE">
+<t>
+To exercise both the solvers in clients, as well as the mechanisms for adding new
+puzzle types, we add a greasing mechanism similar to that proposed in <xref target="RFC8701"/>.
+</t>
+
+<t>
+The following puzzle types are reserved as GREASE values for the puzzle type field:
+<list>
+<t>0x0A0A</t>
+<t>0x1A1A</t>
+<t>0x2A2A</t>
+<t>0x3A3A</t>
+<t>0x4A4A</t>
+<t>0x5A5A</t>
+<t>0x6A6A</t>
+<t>0x7A7A</t>
+<t>0x8A8A</t>
+<t>0x9A9A</t>
+<t>0xAAAA</t>
+<t>0xBABA</t>
+<t>0xCACA</t>
+<t>0xDADA</t>
+<t>0xEAEA</t>
+<t>0xFAFA</t>
+</list>
+</t>
+
+<section anchor="grease-client" title="Client Behavior">
+<t>
+When indicating support for client puzzles, a client MAY behave as follows:
+<list style="symbols">
+<t>A client MAY select one or more of the GREASE puzzle types and advertise them in the ClientPuzzleExtension as supported.</t>
+</list>
+</t>
+
+<t>
+A client MUST abort the connection if it receives a GREASE type challenge. It MAY send an "illegal_parameter" alert
+in such cases. Note that this can be implemented without special processing, as this matches the normal
+behavior for unsupported puzzle types.
+</t>
+</section>
+
+<section anchor="grease-server" title="Server Behavior">
+<t>
+When responding to a ClientHello, a server MAY behave as follows:
+<list style="symbols">
+<t>A server MAY choose to request the client to solve a puzzle even when not under duress. A server SHOULD choose
+low difficulty for such puzzles so as to not unnecessarily burden clients.</t>
+</list>
+</t>
+
+<t>
+A server MUST NOT send puzzles for a GREASE puzzle type. A server MUST
+treat received GREASE puzzle types as unsupported, and ignore them. Note
+that this can be implemented without special processing on the server, as
+this matches the normal behavior for unsupported puzzle types.
+</t>
+</section>
+
+</section>
+
+<section anchor="puzzles" title="Proposed Client Puzzles">
+
+<t>Having multiple client puzzle types allows good clients a choice to
+implement puzzles that match with their hardware capabilities
+(although this also applies to bad clients).  It also allows
+“broken” puzzles to be phased out and retired, such as when
+cryptographic weaknesses are identified.</t>
+
+<section anchor="echo-client-puzzle-type" title="Echo Client Puzzle Type">
+
+<t>The echo ClientPuzzleType is intended to be trivial.
+The client_puzzle_challenge_response data field is defined to be
+a token that the client must echo back.</t>
+
+<t>During an initial ClientHello, this MUST be empty (zero-length).
+During HelloRetryRequest, the server MAY send a cookie challenge of
+zero or more bytes as client_puzzle_challenge_response .  During the
+retried ClientHello, the client MUST respond by resending the
+identical cookie sent in the HelloRetryRequest.</t>
+
+</section>
+<section anchor="sha-256-cpu-puzzle-type" title="SHA-256 CPU Puzzle Type">
+
+<t>This puzzle forces the client to calculate a SHA-256 <xref target="RFC5754"/> multiple times.
+In particular, the server selects a difficulty and a random salt. The client solves
+the puzzle by finding any nonce where a SHA-256 hash across the nonce, the salt and
+a label contains difficulty leading zero bits.</t>
+
+<figure><artwork><![CDATA[
+      struct {
+          uint16 difficulty;
+          uint8 salt<0..2^16-1>;
+      } SHA256CPUPuzzleChallenge;
+
+      struct {
+          uint64 challenge_solution;
+      } SHA256CPUPuzzleResponse;
+]]></artwork></figure>
+
+<t><list style="hanging">
+  <t hangText='difficulty'>
+  filter affecting the time to find solution.</t>
+  <t hangText='salt'>
+  A server selected variable-length bytestring.</t>
+  <t hangText='challenge_solution'>
+  The solution response to the puzzle, as solved by the client.</t>
+</list></t>
+
+<t>To find the response, the client must find a numeric value of challenge_solution
+where:</t>
+
+<t>SHA-256(challenge_solution || salt || label) contains difficulty leading zeros.</t>
+
+<t>where “||” denotes concatenation and where label is the NUL-terminated
+value “TLS SHA256CPUPuzzle” (including the NUL terminator).</t>
+
+<t>Clients offering to support this puzzle type SHOULD support
+a difficulty value of at least 18.  [[TODO: is this a good
+value?  https://en.bitcoin.it/wiki/Non-specialized_hardware_comparison has a comparison of SHA256 on various hardware.]]</t>
+
+</section>
+<section anchor="sha-512-cpu-puzzle-type" title="SHA-512 CPU Puzzle Type">
+
+<t>The SHA-512 CPU Puzzle Type is identical to the
+“SHA256 CPU Puzzle Type” except that the SHA-512 <xref target="RFC5754"/> hash function
+is used instead of SHA-256.  The label used is the value “TLS SHA512CPUPuzzle”.</t>
+
+<t>Clients offering to support this puzzle type SHOULD support difficulty
+values of at least 17.  [[TODO: is this a good value?]]</t>
+
+</section>
+<section anchor="equihash-memory-hard-generalized-birthday-problem-puzzle-type" title="Equihash: Memory-hard Generalized Birthday Problem Puzzle Type">
+
+<t>Using Equihash, the asymmetric memory-hard generalized birthday problem PoW <xref target="NDSS2016"/>,
+this puzzle will force a client to use a significant amount of memory to solve. The
+solution to this puzzle can be trivially verified.</t>
+
+<figure><artwork><![CDATA[
+      struct {
+         uint16 n;
+         uint16 k;
+         uint16 difficulty;
+         uint8 salt<0..2^16-1>;
+     } BirthdayPuzzleChallenge;
+
+     struct {
+         uint8 V<20>;
+         uint8 solution<0..2^16-1>;
+     } BirthdayPuzzleResponse;
+]]></artwork></figure>
+
+<t><list style="hanging">
+  <t hangText='salt'>
+  A server selected variable-length bytestring.</t>
+  <t hangText='n, k'>
+  parameters affecting the complexity of Wagner’s algorithm.</t>
+  <t hangText='difficulty'>
+  secondary filter affecting the time to find solution.</t>
+  <t hangText='V'>
+  20 byte nonce used in solution.</t>
+  <t hangText='solution'>
+  list of 2^k (n/(k+1)+1)-bit nonces used in solution, referred to as xi below.</t>
+</list></t>
+
+<t>In the further text, the output of blake2b is treated as a 512-bit register with most significant bits coming from the last bytes of blake2b output (i.e. little-endian conversion).</t>
+
+<t>To compute the response, the client must find a V and 2^k solutions such that:</t>
+
+<t>blake2b(salt||V||x1) XOR blake2b(salt||V||x2) XOR … XOR blake2b(I||V||x(2^k)) = 0
+blake2b(label||salt||V||x1||x2||…||x(2^k)) has difficulty leading zero bits.</t>
+
+<t>where “||” denotes concatenation and where label is the NUL-terminated
+value “TLS BirthdayPuzzle” (including the NUL terminator). Incomplete bytes in nonces xi are padded with zero bits, which occupy the
+most significant bits.</t>
+
+<t>The client MUST provide the solution list in an order that allows a server to
+verify the solution was created using Wagner’s algorithm:</t>
+
+<t>blake2b(salt||V||x(w<spanx style="emph">2^l+1)) XOR blake2b(salt||V||x(w</spanx>2^l+2)) XOR … XOR blake2b(I||V||x(w*2^l+2^l))
+has nl/(k+1) leading zero bits for all w,l.</t>
+
+<t>and two 2^(l-1)(n/(k+1)+1)-bit numbers Z1 and Z2 must satisfy Z1&lt;Z2 where</t>
+
+<t>Z1 = x(w<spanx style="emph">2^l+1)||x(w</spanx>2^l+2)||…||x(w<spanx style="emph">2^l+2^(l-1)) 
+Z2 = x(w</spanx>2^l+2^(l-1)+1)||x(w<spanx style="emph">2^l+2)||…||x(w</spanx>2^l+2^l)
+ as in(<xref target="NDSS2016"/> section 4A, 5C).
+The server MUST verify these intermediate equations.</t>
+
+<t>A solution can be found using Wagner’s algorithm as described in <xref target="NDSS2016"/>. 
+The amount of memory required to find a solution  is 2 ^ (n/(k+1)+k) bytes.
+A solution  requires (k+1)2^(n/(k+1)+d) calls to the blake2b hash function.</t>
+
+<t>Clients offering to support this puzzle type SHOULD support n, k values such that
+2^(n/(k+1)+k) is at least 20MB.</t>
+
+<t>Servers SHOULD look to minimize the value of k as 2^k blake2b hash operations will
+be required to verify a solution.</t>
+
+</section>
+</section>
+<section anchor="iana" title="IANA Considerations">
+
+<t>The IANA will need to assign an extension codepoint value for ClientPuzzleExtension.</t>
+
+<t>The IANA will need to assign an AlertDescription codepoint value for puzzle_too_hard.</t>
+
+<t>The IANA will also need to maintain a registry of client puzzle types.</t>
+
+</section>
+<section anchor="security" title="Security Considerations">
+
+<t>A hostile server could cause a client to consume unbounded resources.
+Clients MUST bound the amount of resources (cpu/time and memory) they
+will spend on a puzzle.</t>
+
+<t>A puzzle type with economic utility could be abused by servers,
+resulting in unnecessary resource usage by clients.  In the worst
+case, this could open up a new class of attacks where clients might be
+directed to malicious servers to get delegated work.  As such, any new
+puzzle types SHOULD NOT be ones with utility for other purposes (such
+as mining cryptocurrency or cracking password hashes).  Including
+fixed labels in new puzzle definitions may help mitigate this risk.</t>
+
+<t>Depeding on the structure of the puzzles, it is possible that an
+attacker could send innocent clients to a hostile server and then use
+those clients to solve puzzles presented by another target server that
+the attacker wishes to attack.  There may be ways to defend against
+this by including IP information in the puzzles (not currently proposed
+in this draft), although that introduces additional issues.</t>
+
+<t>All extensions add complexity, which could expose additional attack
+surfaces on the client or the server.  Using cryptographic primitives
+and patterns already in-use in TLS can help reduce (but certainly not
+eliminate) this complexity.</t>
+
+<t>An attacker that can force a server into client puzzle mode could
+result in a denial of service to clients not supporting puzzles or not
+having the resources to complete the puzzles.  This is not necessarily
+worse than if the server was overloaded and forced to deny service to
+all clients or to a random selection of clients.  By using client
+puzzles, clients willing to rate-limit themselves to the rate at which
+they can solve puzzles should still be able to obtain service
+while the server is able to stay available for these clients.</t>
+
+<t>It is inevitable that attackers will build hardware optimized to solve
+particular puzzles.  Using common cryptographic primitives (such as
+SHA-256) also means that commonly deployed clients may have hardware
+assistance, although this also benefits legitimate clients.</t>
+
+</section>
+<section anchor="privacy" title="Privacy Considerations">
+
+<t>Measuring the response time of clients to puzzles gives an indication
+of the relative capabilities of clients.  This could be used as an
+input for client fingerprinting.</t>
+
+<t>Client’s support for this extension, as well as which puzzles they
+support, could also be used as an input for client fingerprinting.</t>
+
+</section>
+<section anchor="acknowledgments" title="Acknowledgments">
+
+<t>The story of client puzzles dates back to Dwork and Naor <xref target="DN92"/>
+and Juels and Brainard <xref target="JB99"/>. This draft was in large part based
+on the 2016 draft by Nygren et. al. <xref target="I-D.nygren-tls-client-puzzles"/>,
+which in turn was partially inspired by work done by Kyle Rose in 2001, as well
+as a 2001 paper by Drew Dean (Xerox PARC) and Adam Stubblefield (Rice)
+<xref target="SEC2001.DEAN"/>, as well as being shaped by discussions with Eric Rescorla, 
+Yoav Nir, Richard Willey, Rich Salz, Kyle Rose, Brian Sniffen, and others on
+the TLS working group. An alternate approach was proposed in
+<xref target="I-D.nir-tls-puzzles"/>.  Some similar mechanisms for protecting IKE
+are discused in <xref target="RFC8019"/>.</t>
+
+</section>
+
+
+  </middle>
+
+  <back>
+
+    <references title='Normative References'>
+
+&RFC2119;
+
+&RFC5754;
+
+&RFC8446;
+
+    </references>
+
+    <references title='Informative References'>
+
+<reference anchor="SEC2001.DEAN" target="https://www.usenix.org/legacy/events/sec2001/full_papers/dean/dean.pdf">
+  <front>
+    <title>Using Client Puzzles to Protect TLS</title>
+    <author initials="D." surname="Dean" fullname="Drew Dean">
+      <organization>Xerox PARC</organization>
+    </author>
+    <author initials="A." surname="Stubblefield" fullname="Adam Stubblefield">
+      <organization>Rice University</organization>
+    </author>
+    <date year="2001" month="August" day="11"/>
+  </front>
+  <seriesInfo name="Proceedings of the 10th USENIX Security Symposium" value=""/>
+</reference>
+<reference anchor="DN92" target="http://www.wisdom.weizmann.ac.il/~naor/PAPERS/pvp_abs.html">
+  <front>
+    <title>Pricing via Processing or Combatting Junk Mail</title>
+    <author initials="C." surname="Dwork" fullname="Cynthia Dwork">
+      <organization>IBM Research</organization>
+    </author>
+    <author initials="M." surname="Naor" fullname="Moni Naor">
+      <organization>Weizmann Institute of Science</organization>
+    </author>
+    <date year="1992"/>
+  </front>
+  <seriesInfo name="Proceedings of Crypto'92" value=""/>
+</reference>
+<reference anchor="JB99" target="http://www.wisdom.weizmann.ac.il/~naor/PAPERS/pvp_abs.html">
+  <front>
+    <title>Client Puzzles: A Cryptographic Defense Against Connection Depletion Attacks</title>
+    <author initials="A." surname="Juels" fullname="Ari Juels">
+      <organization>RSA Laboratories</organization>
+    </author>
+    <author initials="J." surname="Brainard" fullname="John Brainard">
+      <organization>RSA Laboratories</organization>
+    </author>
+    <date year="1999"/>
+  </front>
+  <seriesInfo name="Proceedings of NDSS'99" value=""/>
+</reference>
+<reference anchor="NDSS2016" target="https://www.internetsociety.org/sites/default/files/blogs-media/equihash-asymmetric-proof-of-work-based-generalized-birthday-problem.pdf">
+  <front>
+    <title>Equihash: Asymmetric proof-of-work based on the Generalized Birthday problem</title>
+    <author initials="A." surname="Biryukov" fullname="Alex Biryukov">
+      <organization>University of Luxembourg</organization>
+    </author>
+    <author initials="D." surname="Khovratovich" fullname="Dmitry Khovratovich">
+      <organization>University of Luxembourg</organization>
+    </author>
+    <date year="2016" month="February" day="25"/>
+  </front>
+</reference>
+
+&NIRCLIENTPUZZLES;
+
+&NYGRENCLIENTPUZZLES;
+
+&RFC8019;
+
+&RFC8701;
+
+    </references>
+
+
+
+  </back>
+</rfc>
